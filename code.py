@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 from pathlib import Path
+from matplotlib.colors import ListedColormap, BoundaryNorm
 
 
 from itertools import product
@@ -10,7 +11,7 @@ from itertools import product
 # Simulation settings
 # ============================================================
 
-RUN_MODE = "test"  # Options: "test" or "sweep"
+RUN_MODE = "sweep"  # Options: "test" or "sweep"
 
 BASE_PARAMS = {
     "b": 2.0,
@@ -97,12 +98,25 @@ def replicator_eq(t, current_state, params):
 
 def convergence_event(t, current_state, params):
 
-    derivatives = replicator_eq(t, current_state, params)
+    u_y, u_z = current_state
 
-    return np.max(np.abs(derivatives)) - 1e-8
+    max_u = max(0.0, u_y, u_z)
+
+    exp_y = np.exp(u_y - max_u)
+    exp_z = np.exp(u_z - max_u)
+    exp_v = np.exp(-max_u)
+
+    denominator = exp_y + exp_z + exp_v
+
+    y = exp_y / denominator
+    z = exp_z / denominator
+    v = exp_v / denominator
+
+    return max(y, z, v) - (1.0 - 1e-8)
+
 
 convergence_event.terminal = True
-convergence_event.direction = -1
+convergence_event.direction = 1
 
 def run_simulation(params, initial_conditions):
 
@@ -275,20 +289,28 @@ def run_parameter_sweep():
                 # Extract reconstructed strategy shares
                 y, z, v = solution.y
 
-                final_shares = np.array([
-                    y[-1], z[-1], v[-1]
-                ])
+                # Check whether the convergence event was triggered
+                converged = len(solution.t_events[0]) > 0
 
-                # Determine winning strategy
-                winner = strategy_names[np.argmax(final_shares)]
+                if converged:
+                    final_shares = np.array([
+                        solution.y[0, -1],
+                        solution.y[1, -1],
+                        solution.y[2, -1]
+                    ])
+
+                    winner = strategy_names[np.argmax(final_shares)]
+                else:
+                    winner = "No winner"
 
                 results.append({
                     "params": params.copy(),
                     "initial": initial,
-                    "final_y": y[-1],
-                    "final_z": z[-1],
-                    "final_v": v[-1],
-                    "winner": winner
+                    "final_y": solution.y[0, -1],
+                    "final_z": solution.y[1, -1],
+                    "final_v": solution.y[2, -1],
+                    "winner": winner,
+                    "converged": converged
                 })
 
                 print(
@@ -328,32 +350,29 @@ def run_parameter_sweep():
 
 def plot_winner_map(results):
 
+    b_values = PARAMETER_GRID["b"]
+    s_values = PARAMETER_GRID["s"]
+
     strategy_names = [
         "ALLD",
         "Discriminator",
         "Pure Virtue Signaling"
     ]
 
-    categories = strategy_names + ["Mixed", "No data"]
+    categories = strategy_names + ["No winner"]
 
     colors = [
         "tab:red",
         "tab:green",
         "tab:purple",
-        "gold",
         "lightgray"
     ]
 
-    b_values = sorted(PARAMETER_GRID["b"])
-    s_values = sorted(PARAMETER_GRID["s"])
-
-    # Initialise grid
     winner_grid = np.full(
         (len(s_values), len(b_values)),
         len(categories) - 1
     )
 
-    # Determine winner for each parameter combination
     for i, s in enumerate(s_values):
         for j, b in enumerate(b_values):
 
@@ -374,32 +393,39 @@ def plot_winner_map(results):
                 for strategy in strategy_names
             }
 
+            no_winner_count = sum(
+                r["winner"] == "No winner"
+                for r in matching_results
+            )
+
             max_wins = max(winner_counts.values())
 
-            winners = [
-                strategy
-                for strategy, count in winner_counts.items()
-                if count == max_wins
-            ]
-
-            if len(winners) == 1:
-                winner_grid[i, j] = strategy_names.index(winners[0])
-            else:
+            if max_wins == 0:
                 winner_grid[i, j] = len(strategy_names)
 
-    # Create categorical colour map
-    from matplotlib.colors import ListedColormap, BoundaryNorm
+            else:
+                winners = [
+                    strategy
+                    for strategy, count in winner_counts.items()
+                    if count == max_wins
+                ]
+
+                if len(winners) == 1 and no_winner_count == 0:
+                    winner_grid[i, j] = strategy_names.index(winners[0])
+                elif len(winners) == 1 and max_wins > no_winner_count:
+                    winner_grid[i, j] = strategy_names.index(winners[0])
+                else:
+                    winner_grid[i, j] = len(strategy_names)
 
     cmap = ListedColormap(colors)
-
     norm = BoundaryNorm(
         np.arange(-0.5, len(categories) + 0.5, 1),
         cmap.N
     )
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(9, 7))
 
-    mesh = ax.imshow(
+    im = ax.imshow(
         winner_grid,
         cmap=cmap,
         norm=norm,
@@ -408,49 +434,45 @@ def plot_winner_map(results):
         interpolation="none"
     )
 
-    # Axis labels
     ax.set_xticks(range(len(b_values)))
     ax.set_xticklabels(b_values)
-
     ax.set_yticks(range(len(s_values)))
     ax.set_yticklabels(s_values)
 
     ax.set_xlabel("Benefit (b)")
     ax.set_ylabel("Signaling cost (s)")
-    ax.set_title("Dominant Strategy Across Parameter Combinations")
+    ax.set_title("Winning Strategy")
 
-    # Grid lines
-    ax.set_xticks(np.arange(-0.5, len(b_values), 1), minor=True)
-    ax.set_yticks(np.arange(-0.5, len(s_values), 1), minor=True)
-
+    ax.set_xticks(
+        np.arange(-0.5, len(b_values), 1),
+        minor=True
+    )
+    ax.set_yticks(
+        np.arange(-0.5, len(s_values), 1),
+        minor=True
+    )
     ax.grid(which="minor", color="black", linewidth=0.5)
     ax.tick_params(which="minor", bottom=False, left=False)
 
-    # Colour legend
-    colorbar = fig.colorbar(
-        mesh,
+    cbar = fig.colorbar(
+        im,
         ax=ax,
-        ticks=np.arange(len(categories))
+        ticks=range(len(categories))
     )
-
-    colorbar.ax.set_yticklabels(categories)
-    colorbar.set_label("Winning strategy")
+    cbar.ax.set_yticklabels(categories)
 
     plt.tight_layout()
 
-    # Save plot
     save_dir = Path("results")
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    filepath = save_dir / "strategy_winner_map.png"
+    filepath = save_dir / "winner_map.png"
 
     plt.savefig(filepath, dpi=300, bbox_inches="tight")
-
     print(f"Winner map saved to: {filepath}")
 
     plt.show()
     plt.close()
-
 
 def main():
 
