@@ -23,7 +23,7 @@ BASE_PARAMS = {
 }
 
 # Initial conditions for testing
-TEST_INITIAL = (0.25, 0.25, 0.25)
+TEST_INITIAL = (0.501, 0.249)
 
 
 # ============================================================
@@ -38,69 +38,61 @@ PARAMETER_GRID = {
 
 # Different initial conditions
 INITIAL_CONDITIONS = [
-    (0.25, 0.25, 0.25),
-    (0.7, 0.1, 0.1),
-    (0.1, 0.7, 0.1),
-    (0.1, 0.1, 0.7),
-    (0.1, 0.1, 0.1)
+    (1/3, 1/3),
+    (7/9, 1/9),
+    (1/9, 7/9),
+    (1/9, 1/9)
 ]
 
 
-def payoff(x, y, z, v, params):
+def payoff(y, z, v, params):
 
     b = params["b"]
     c = params["c"]
     s = params["s"]
 
-    g_x = params["g_x"]
     g_y = params["g_y"]
     g_z = params["g_z"]
     g_v = params["g_v"]
 
-    g = x * g_x + y * g_y + z * g_z + v * g_v
+    g = y * g_y + z * g_z + v * g_v
 
-    P_x = b * (x + z * g_x) - c
-    P_y = b * (x + z * g_y)
-    P_z = b * (x + z * g_z) - c * g
-    P_v = b * (x + z * g_v) - s
+    P_y = b * (z * g_y)
+    P_z = b * (z * g_z) - c * g
+    P_v = b * (z * g_v) - s
 
-    P_bar = x * P_x + y * P_y + z * P_z + v * P_v
+    P_bar = y * P_y + z * P_z + v * P_v
 
-    return g, P_x, P_y, P_z, P_v, P_bar
+    return g, P_y, P_z, P_v, P_bar
 
 
 def replicator_eq(t, current_state, params):
 
-    # Log-ratio coordinates
-    u_x, u_y, u_z = current_state
+    u_y, u_z = current_state
 
     # Reconstruct strategy shares using softmax
-    # Subtract maximum for numerical stability
-    max_u = max(0.0, u_x, u_y, u_z)
+    max_u = max(0.0, u_y, u_z)
 
-    exp_x = np.exp(u_x - max_u)
     exp_y = np.exp(u_y - max_u)
     exp_z = np.exp(u_z - max_u)
     exp_v = np.exp(-max_u)
 
-    denominator = exp_x + exp_y + exp_z + exp_v
+    denominator = exp_y + exp_z + exp_v
 
-    x = exp_x / denominator
     y = exp_y / denominator
     z = exp_z / denominator
     v = exp_v / denominator
 
     # Calculate payoffs
-    g, P_x, P_y, P_z, P_v, P_bar = payoff(
-        x, y, z, v, params
+    g, P_y, P_z, P_v, P_bar = payoff(
+        y, z, v, params
     )
 
     # Log-ratio replicator equations
-    du_x = P_x - P_v
     du_y = P_y - P_v
     du_z = P_z - P_v
 
-    return [du_x, du_y, du_z]
+    return [du_y, du_z]
 
 
 def convergence_event(t, current_state, params):
@@ -119,11 +111,10 @@ def run_simulation(params, initial_conditions):
     t_points = 15000
 
     # Initial strategy shares
-    x0, y0, z0 = initial_conditions
-    v0 = 1.0 - x0 - y0 - z0
+    y0, z0 = initial_conditions
+    v0 = 1.0 - y0 - z0
 
-    # Validate initial conditions
-    initial_shares = np.array([x0, y0, z0, v0])
+    initial_shares = np.array([y0, z0, v0])
 
     if np.any(initial_shares <= 0) or np.any(initial_shares > 1):
         raise ValueError(
@@ -135,14 +126,12 @@ def run_simulation(params, initial_conditions):
 
     # Transform initial conditions into log-ratio coordinates
     y0_vector = np.array([
-        np.log(x0 / v0),
         np.log(y0 / v0),
         np.log(z0 / v0)
     ])
 
     t_eval = np.linspace(t_start, t_end, t_points)
 
-    # Integrate logarithmic system
     solution = solve_ivp(
         fun=replicator_eq,
         t_span=(t_start, t_end),
@@ -158,41 +147,36 @@ def run_simulation(params, initial_conditions):
     if not solution.success:
         raise RuntimeError(solution.message)
 
-    # Reconstruct strategy shares from logarithmic coordinates
-    u_x, u_y, u_z = solution.y
+    # Reconstruct strategy shares
+    u_y, u_z = solution.y
 
-    # Numerically stable softmax reconstruction
     max_u = np.maximum.reduce([
-        np.zeros_like(u_x),
-        u_x,
+        np.zeros_like(u_y),
         u_y,
         u_z
     ])
 
-    exp_x = np.exp(u_x - max_u)
     exp_y = np.exp(u_y - max_u)
     exp_z = np.exp(u_z - max_u)
     exp_v = np.exp(-max_u)
 
-    denominator = exp_x + exp_y + exp_z + exp_v
+    denominator = exp_y + exp_z + exp_v
 
-    x = exp_x / denominator
     y = exp_y / denominator
     z = exp_z / denominator
     v = exp_v / denominator
 
-    # Replace logarithmic solution with reconstructed shares
-    solution.y = np.vstack([x, y, z, v])
+    # Replace logarithmic solution with strategy shares
+    solution.y = np.vstack([y, z, v])
 
     # Print final strategy shares
     print("\nFinal strategy shares:")
-    print(f"x(T) = {x[-1]:.6f}")
     print(f"y(T) = {y[-1]:.6f}")
     print(f"z(T) = {z[-1]:.6f}")
     print(f"v(T) = {v[-1]:.6f}")
 
     # Check normalization
-    total = x + y + z + v
+    total = y + z + v
 
     if not np.allclose(total, 1.0, atol=1e-10):
         raise RuntimeError("Normalization condition violated!")
@@ -207,7 +191,7 @@ def run_simulation(params, initial_conditions):
 def plot_solution(solution, params, initial_conditions):
 
     t = solution.t
-    x, y, z, v = solution.y
+    y, z, v = solution.y
 
     # Create parameter-specific directory
     parameter_folder = f"b={params['b']:g}_s={params['s']:g}"
@@ -215,20 +199,17 @@ def plot_solution(solution, params, initial_conditions):
     save_dir = Path("results") / parameter_folder
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create filename based on initial conditions
-    x0, y0, z0 = initial_conditions
-    v0 = 1 - x0 - y0 - z0
+    # Initial conditions
+    y0, z0 = initial_conditions
+    v0 = 1 - y0 - z0
 
-    filename = (
-        f"IC_x={x0:g}_y={y0:g}_z={z0:g}_v={v0:g}.png"
-    )
+    filename = f"IC_y={y0:g}_z={z0:g}_v={v0:g}.png"
 
     filepath = save_dir / filename
 
     # Create plot
     plt.figure(figsize=(10, 6))
 
-    plt.plot(t, x, label="ALLC", linewidth=2)
     plt.plot(t, y, label="ALLD", linewidth=2)
     plt.plot(t, z, label="Discriminator", linewidth=2)
     plt.plot(t, v, label="Pure Virtue Signaling", linewidth=2)
@@ -242,7 +223,6 @@ def plot_solution(solution, params, initial_conditions):
     plt.legend()
     plt.tight_layout()
 
-    # Save plot
     plt.savefig(filepath, dpi=300, bbox_inches="tight")
 
     print(f"Plot saved to: {filepath}")
@@ -262,7 +242,6 @@ def run_single_test():
     plot_solution(solution, BASE_PARAMS, TEST_INITIAL)
 
 
-
 def run_parameter_sweep():
 
     print("Running parameter sweep...")
@@ -274,7 +253,6 @@ def run_parameter_sweep():
     failed_simulations = []
 
     strategy_names = [
-        "ALLC",
         "ALLD",
         "Discriminator",
         "Pure Virtue Signaling"
@@ -295,10 +273,10 @@ def run_parameter_sweep():
                 plot_solution(solution, params, initial)
 
                 # Extract reconstructed strategy shares
-                x, y, z, v = solution.y
+                y, z, v = solution.y
 
                 final_shares = np.array([
-                    x[-1], y[-1], z[-1], v[-1]
+                    y[-1], z[-1], v[-1]
                 ])
 
                 # Determine winning strategy
@@ -307,7 +285,6 @@ def run_parameter_sweep():
                 results.append({
                     "params": params.copy(),
                     "initial": initial,
-                    "final_x": x[-1],
                     "final_y": y[-1],
                     "final_z": z[-1],
                     "final_v": v[-1],
@@ -319,7 +296,7 @@ def run_parameter_sweep():
                     f"c={params['c']}, "
                     f"s={params['s']} | "
                     f"Initial={initial} | "
-                    f"Final={[round(x[-1], 3), round(y[-1], 3), round(z[-1], 3), round(v[-1], 3)]} | "
+                    f"Final={[round(y[-1], 3), round(z[-1], 3), round(v[-1], 3)]} | "
                     f"Winner={winner}"
                 )
 
@@ -352,7 +329,6 @@ def run_parameter_sweep():
 def plot_winner_map(results):
 
     strategy_names = [
-        "ALLC",
         "ALLD",
         "Discriminator",
         "Pure Virtue Signaling"
@@ -361,7 +337,6 @@ def plot_winner_map(results):
     categories = strategy_names + ["Mixed", "No data"]
 
     colors = [
-        "tab:blue",
         "tab:red",
         "tab:green",
         "tab:purple",
