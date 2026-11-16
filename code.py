@@ -11,20 +11,21 @@ from itertools import product
 # Simulation settings
 # ============================================================
 
-RUN_MODE = "sweep"  # Options: "test" or "sweep"
+RUN_MODE = "test"  # Options: "test" or "sweep"
 
 BASE_PARAMS = {
     "b": 2.0,
     "c": 1.0,
-    "s": 0.5,
+    "s": 0.4,
     "g_x": 1,
     "g_y": 0,
     "g_z": 1,
-    "g_v": 1
+    "g_v": 0.5,
+    "q": 0.5
 }
 
 # Initial conditions for testing
-TEST_INITIAL = (0.501, 0.249)
+TEST_INITIAL = (0.01, 0.01)
 
 
 # ============================================================
@@ -32,9 +33,9 @@ TEST_INITIAL = (0.501, 0.249)
 # ============================================================
 
 PARAMETER_GRID = {
-    "b": [1.5, 2.0, 3.0, 5.0, 10.0, 100.0],
-    "c": [1.0],
-    "s": [0.1, 0.25, 0.5, 0.75, 0.9]
+    "b": [1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0],
+    "s": [0.1, 0.2, 0.3, 0.4, 0.5],
+    "q": [0.5]
 }
 
 # Different initial conditions
@@ -51,16 +52,19 @@ def payoff(y, z, v, params):
     b = params["b"]
     c = params["c"]
     s = params["s"]
+    q = params["q"]
 
     g_y = params["g_y"]
     g_z = params["g_z"]
-    g_v = params["g_v"]
+    g_v = q
 
     g = y * g_y + z * g_z + v * g_v
 
     P_y = b * (z * g_y)
     P_z = b * (z * g_z) - c * g
     P_v = b * (z * g_v) - s
+
+    print(P_y, P_z, P_v)
 
     P_bar = y * P_y + z * P_z + v * P_v
 
@@ -112,7 +116,7 @@ def convergence_event(t, current_state, params):
     z = exp_z / denominator
     v = exp_v / denominator
 
-    return max(y, z, v) - (1.0 - 1e-8)
+    return max(y, z, v) - (1.0 - 1e-12)
 
 
 convergence_event.terminal = True
@@ -122,7 +126,7 @@ def run_simulation(params, initial_conditions):
 
     t_start = 0.0
     t_end = 1000.0
-    t_points = 15000
+    t_points = 150000
 
     # Initial strategy shares
     y0, z0 = initial_conditions
@@ -208,7 +212,7 @@ def plot_solution(solution, params, initial_conditions):
     y, z, v = solution.y
 
     # Create parameter-specific directory
-    parameter_folder = f"b={params['b']:g}_s={params['s']:g}"
+    parameter_folder = f"b={params['b']:g}_s={params['s']:g}_q={params['q']:g}"
 
     save_dir = Path("results") / parameter_folder
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -316,7 +320,8 @@ def run_parameter_sweep():
                 print(
                     f"b={params['b']}, "
                     f"c={params['c']}, "
-                    f"s={params['s']} | "
+                    f"s={params['s']}, "
+                    f"q={params['q']} | "
                     f"Initial={initial} | "
                     f"Final={[round(y[-1], 3), round(z[-1], 3), round(v[-1], 3)]} | "
                     f"Winner={winner}"
@@ -328,7 +333,8 @@ def run_parameter_sweep():
                 print(
                     f"b={params['b']}, "
                     f"c={params['c']}, "
-                    f"s={params['s']} | "
+                    f"s={params['s']}, "
+                    f"q={params['q']} | "
                     f"Initial={initial}"
                 )
                 print(f"Error: {error}")
@@ -352,6 +358,7 @@ def plot_winner_map(results):
 
     b_values = PARAMETER_GRID["b"]
     s_values = PARAMETER_GRID["s"]
+    q_values = PARAMETER_GRID["q"]
 
     strategy_names = [
         "ALLD",
@@ -368,111 +375,133 @@ def plot_winner_map(results):
         "lightgray"
     ]
 
-    winner_grid = np.full(
-        (len(s_values), len(b_values)),
-        len(categories) - 1
-    )
-
-    for i, s in enumerate(s_values):
-        for j, b in enumerate(b_values):
-
-            matching_results = [
-                r for r in results
-                if r["params"]["b"] == b
-                and r["params"]["s"] == s
-            ]
-
-            if not matching_results:
-                continue
-
-            winner_counts = {
-                strategy: sum(
-                    r["winner"] == strategy
-                    for r in matching_results
-                )
-                for strategy in strategy_names
-            }
-
-            no_winner_count = sum(
-                r["winner"] == "No winner"
-                for r in matching_results
-            )
-
-            max_wins = max(winner_counts.values())
-
-            if max_wins == 0:
-                winner_grid[i, j] = len(strategy_names)
-
-            else:
-                winners = [
-                    strategy
-                    for strategy, count in winner_counts.items()
-                    if count == max_wins
-                ]
-
-                if len(winners) == 1 and no_winner_count == 0:
-                    winner_grid[i, j] = strategy_names.index(winners[0])
-                elif len(winners) == 1 and max_wins > no_winner_count:
-                    winner_grid[i, j] = strategy_names.index(winners[0])
-                else:
-                    winner_grid[i, j] = len(strategy_names)
-
     cmap = ListedColormap(colors)
     norm = BoundaryNorm(
         np.arange(-0.5, len(categories) + 0.5, 1),
         cmap.N
     )
 
-    fig, ax = plt.subplots(figsize=(9, 7))
+    for q in q_values:
 
-    im = ax.imshow(
-        winner_grid,
-        cmap=cmap,
-        norm=norm,
-        origin="lower",
-        aspect="equal",
-        interpolation="none"
-    )
+        winner_grid = np.full(
+            (len(s_values), len(b_values)),
+            len(categories) - 1
+        )
 
-    ax.set_xticks(range(len(b_values)))
-    ax.set_xticklabels(b_values)
-    ax.set_yticks(range(len(s_values)))
-    ax.set_yticklabels(s_values)
+        for i, s in enumerate(s_values):
+            for j, b in enumerate(b_values):
 
-    ax.set_xlabel("Benefit (b)")
-    ax.set_ylabel("Signaling cost (s)")
-    ax.set_title("Winning Strategy")
+                matching_results = [
+                    r for r in results
+                    if r["params"]["b"] == b
+                    and r["params"]["s"] == s
+                    and r["params"]["q"] == q
+                ]
 
-    ax.set_xticks(
-        np.arange(-0.5, len(b_values), 1),
-        minor=True
-    )
-    ax.set_yticks(
-        np.arange(-0.5, len(s_values), 1),
-        minor=True
-    )
-    ax.grid(which="minor", color="black", linewidth=0.5)
-    ax.tick_params(which="minor", bottom=False, left=False)
+                if not matching_results:
+                    continue
 
-    cbar = fig.colorbar(
-        im,
-        ax=ax,
-        ticks=range(len(categories))
-    )
-    cbar.ax.set_yticklabels(categories)
+                winner_counts = {
+                    strategy: sum(
+                        r["winner"] == strategy
+                        for r in matching_results
+                    )
+                    for strategy in strategy_names
+                }
 
-    plt.tight_layout()
+                no_winner_count = sum(
+                    r["winner"] == "No winner"
+                    for r in matching_results
+                )
 
-    save_dir = Path("results")
-    save_dir.mkdir(parents=True, exist_ok=True)
+                max_wins = max(winner_counts.values())
 
-    filepath = save_dir / "winner_map.png"
+                winners = [
+                    strategy
+                    for strategy, count in winner_counts.items()
+                    if count == max_wins
+                ]
 
-    plt.savefig(filepath, dpi=300, bbox_inches="tight")
-    print(f"Winner map saved to: {filepath}")
+                if (
+                    len(winners) == 1
+                    and max_wins > no_winner_count
+                ):
+                    winner_grid[i, j] = strategy_names.index(
+                        winners[0]
+                    )
+                else:
+                    winner_grid[i, j] = len(strategy_names)
 
-    plt.show()
-    plt.close()
+        # Create figure
+        fig, ax = plt.subplots(figsize=(9, 7))
+
+        im = ax.imshow(
+            winner_grid,
+            cmap=cmap,
+            norm=norm,
+            origin="lower",
+            aspect="equal",
+            interpolation="none"
+        )
+
+        ax.set_xticks(range(len(b_values)))
+        ax.set_xticklabels(b_values)
+
+        ax.set_yticks(range(len(s_values)))
+        ax.set_yticklabels(s_values)
+
+        ax.set_xlabel("Benefit (b)")
+        ax.set_ylabel("Signaling cost (s)")
+        ax.set_title(f"Winning Strategy (q={q:g})")
+
+        # Grid lines
+        ax.set_xticks(
+            np.arange(-0.5, len(b_values), 1),
+            minor=True
+        )
+        ax.set_yticks(
+            np.arange(-0.5, len(s_values), 1),
+            minor=True
+        )
+
+        ax.grid(
+            which="minor",
+            color="black",
+            linewidth=0.5
+        )
+
+        ax.tick_params(
+            which="minor",
+            bottom=False,
+            left=False
+        )
+
+        # Colorbar
+        cbar = fig.colorbar(
+            im,
+            ax=ax,
+            ticks=range(len(categories))
+        )
+
+        cbar.ax.set_yticklabels(categories)
+
+        plt.tight_layout()
+
+        # Save figure
+        save_dir = Path("results") / "winner_maps"
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        filepath = save_dir / f"winner_map_q={q:g}.png"
+
+        plt.savefig(
+            filepath,
+            dpi=300,
+            bbox_inches="tight"
+        )
+
+        print(f"Winner map saved to: {filepath}")
+
+        plt.close()
 
 def main():
 
