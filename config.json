@@ -1,0 +1,39 @@
+{
+  "parameters": {
+    "b": 2.0,
+    "c": 1.0,
+    "s": 0.4,
+    "q": 0.5
+  },
+
+  "reputation_mechanism": [
+    [1, 1, 1, 1],
+    [0, 1, 0, 0]
+  ],
+
+  "strategies": {
+    "ALLC": {
+      "enabled": true,
+      "share": 4,
+      "reputation": 0.1
+    },
+    "ALLD": {
+      "enabled": true,
+      "share": 3,
+      "reputation": 0.9
+    },
+    "DISC": {
+      "enabled": true,
+      "share": 3,
+      "reputation": 0.1
+    }
+  },
+
+  "simulation": {
+    "t_start": 0.0,
+    "t_end": 1000.0,
+    "t_points": 15000,
+    "rtol": 1e-8,
+    "atol": 1e-10
+  }
+}

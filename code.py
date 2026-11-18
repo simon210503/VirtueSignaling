@@ -1,164 +1,311 @@
+import json
 import numpy as np
 import matplotlib.pyplot as plt
+
 from scipy.integrate import solve_ivp
 from pathlib import Path
 from matplotlib.colors import ListedColormap, BoundaryNorm
 
 
-from itertools import product
+def create_strategy(name, rmech):
+    if name == "ALLC":
+        return [0, 0, 0, 0]
 
-# ============================================================
-# Simulation settings
-# ============================================================
+    elif name == "ALLD":
+        return [1, 1, 1, 1]
 
-RUN_MODE = "test"  # Options: "test" or "sweep"
+    elif name == "DISC":
+        return [
+            0 if rmech[0][i] == 1 and rmech[1][i] == 0 else 1
+            for i in range(4)
+        ]
 
-BASE_PARAMS = {
-    "b": 2.0,
-    "c": 1.0,
-    "s": 0.4,
-    "g_x": 1,
-    "g_y": 0,
-    "g_z": 1,
-    "g_v": 0.5,
-    "q": 0.5
-}
+    else:
+        raise ValueError(f"Unknown strategy: {name}")
 
-# Initial conditions for testing
-TEST_INITIAL = (0.01, 0.01)
+def load_config(filepath="config.json"):
+    with open(filepath, "r") as file:
+        config = json.load(file)
+
+    params = config["parameters"]
+    rmech = config["reputation_mechanism"]
+
+    strategies = {}
+
+    for name, settings in config["strategies"].items():
+
+        if not settings["enabled"]:
+            continue
+
+        strategies[name] = create_strategy(name, rmech)
+
+    params["rmech"] = rmech
+    params["strategies"] = strategies
+
+    params["initial_shares"] = {
+        name: config["strategies"][name]["share"]
+        for name in strategies
+    }
+
+    params["initial_reputations"] = {
+        name: config["strategies"][name]["reputation"]
+        for name in strategies
+    }
+
+    params["simulation"] = config["simulation"]
+
+    return params
 
 
-# ============================================================
-# Parameter sweep settings
-# ============================================================
+def normalize_shares(weights):
 
-PARAMETER_GRID = {
-    "b": [1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0],
-    "s": [0.1, 0.2, 0.3, 0.4, 0.5],
-    "q": [0.5]
-}
+    weights = np.asarray(weights, dtype=float)
 
-# Different initial conditions
-INITIAL_CONDITIONS = [
-    (1/3, 1/3),
-    (7/9, 1/9),
-    (1/9, 7/9),
-    (1/9, 1/9)
-]
+    if np.any(weights < 0):
+        raise ValueError("Initial weights must be non-negative.")
+
+    total = np.sum(weights)
+
+    if total <= 0:
+        raise ValueError("The sum of initial weights must be positive.")
+
+    return weights / total
 
 
-def payoff(y, z, v, params):
+
+def update_reputation(g_i, g, rmech, strategy):
+
+    # Columns: GG, GB, BG, BB
+    probabilities = [
+        g_i * g,
+        g_i * (1 - g),
+        (1 - g_i) * g,
+        (1 - g_i) * (1 - g)
+    ]
+
+    new_g = 0.0
+
+    for j in range(4):
+
+        action = strategy[j]
+
+        # 0 = cooperation, 1 = defection
+        assessment = rmech[action][j]
+
+        new_g += probabilities[j] * assessment
+
+    return new_g
+
+
+
+def cooperation_probability(strategy, g_donor, g_recipient):
+
+    probabilities = [
+        g_donor * g_recipient,
+        g_donor * (1 - g_recipient),
+        (1 - g_donor) * g_recipient,
+        (1 - g_donor) * (1 - g_recipient)
+    ]
+
+    return sum(
+        probabilities[j] * (1 - strategy[j])
+        for j in range(4)
+    )
+
+
+def payoff(shares, reputations, strategies, params):
 
     b = params["b"]
     c = params["c"]
-    s = params["s"]
-    q = params["q"]
 
-    g_y = params["g_y"]
-    g_z = params["g_z"]
-    g_v = q
+    names = list(strategies.keys())
 
-    g = y * g_y + z * g_z + v * g_v
+    # Total fraction with good reputation
+    g = np.dot(shares, reputations)
 
-    P_y = b * (z * g_y)
-    P_z = b * (z * g_z) - c * g
-    P_v = b * (z * g_v) - s
+    payoffs = []
 
-    print(P_y, P_z, P_v)
+    for i, name_i in enumerate(names):
 
-    P_bar = y * P_y + z * P_z + v * P_v
+        # Expected benefit received from the population
+        benefit = 0.0
 
-    return g, P_y, P_z, P_v, P_bar
+        for j, name_j in enumerate(names):
+
+            benefit += (
+                shares[j] * b *
+                cooperation_probability(
+                    strategies[name_j],
+                    reputations[j],
+                    reputations[i]
+                )
+            )
+
+        # Expected cooperation by strategy i
+        own_cooperation = cooperation_probability(
+            strategies[name_i],
+            reputations[i],
+            g
+        )
+
+        cost = c * own_cooperation
+
+        payoffs.append(benefit - cost)
+
+    return g, np.array(payoffs)
+
+
+
+def shares_from_logits(u):
+
+    logits = np.concatenate(([0.0], u))
+
+    logits -= np.max(logits)
+
+    exp_u = np.exp(logits)
+
+    return exp_u / np.sum(exp_u)
 
 
 def replicator_eq(t, current_state, params):
 
-    u_y, u_z = current_state
+    strategies = params["strategies"]
+    rmech = params["rmech"]
 
-    # Reconstruct strategy shares using softmax
-    max_u = max(0.0, u_y, u_z)
+    names = list(strategies.keys())
 
-    exp_y = np.exp(u_y - max_u)
-    exp_z = np.exp(u_z - max_u)
-    exp_v = np.exp(-max_u)
+    n = len(names)
 
-    denominator = exp_y + exp_z + exp_v
+    # Split strategy and reputation variables
 
-    y = exp_y / denominator
-    z = exp_z / denominator
-    v = exp_v / denominator
+    u = current_state[:n-1]
+    reputations = current_state[n-1:]
+
+    # Reconstruct strategy shares
+
+    shares = shares_from_logits(u)
 
     # Calculate payoffs
-    g, P_y, P_z, P_v, P_bar = payoff(
-        y, z, v, params
+
+    g, payoffs = payoff(
+        shares,
+        reputations,
+        strategies,
+        params
     )
 
-    # Log-ratio replicator equations
-    du_y = P_y - P_v
-    du_z = P_z - P_v
+    # Replicator dynamics
 
-    return [du_y, du_z]
+    du = payoffs[1:] - payoffs[0]
+
+    # Reputation dynamics
+
+    dg = np.array([
+        update_reputation(
+            reputations[i],
+            g,
+            rmech,
+            strategies[name]
+        ) - reputations[i]
+
+        for i, name in enumerate(names)
+    ])
+
+    return np.concatenate((du, dg))
+
 
 
 def convergence_event(t, current_state, params):
 
-    u_y, u_z = current_state
+    n = len(params["strategies"])
 
-    max_u = max(0.0, u_y, u_z)
+    u = current_state[:n-1]
 
-    exp_y = np.exp(u_y - max_u)
-    exp_z = np.exp(u_z - max_u)
-    exp_v = np.exp(-max_u)
+    shares = shares_from_logits(u)
 
-    denominator = exp_y + exp_z + exp_v
-
-    y = exp_y / denominator
-    z = exp_z / denominator
-    v = exp_v / denominator
-
-    return max(y, z, v) - (1.0 - 1e-12)
+    return np.max(shares) - (1.0 - 1e-12)
 
 
 convergence_event.terminal = True
 convergence_event.direction = 1
 
-def run_simulation(params, initial_conditions):
 
-    t_start = 0.0
-    t_end = 1000.0
-    t_points = 150000
 
+
+def run_simulation(params):
+
+    simulation = params["simulation"]
+
+    t_start = simulation["t_start"]
+    t_end = simulation["t_end"]
+    t_points = simulation["t_points"]
+    strategies = params["strategies"]
+
+    names = list(strategies.keys())
+
+    n = len(names)
+
+    # ========================================================
     # Initial strategy shares
-    y0, z0 = initial_conditions
-    v0 = 1.0 - y0 - z0
+    # ========================================================
 
-    initial_shares = np.array([y0, z0, v0])
-
-    if np.any(initial_shares <= 0) or np.any(initial_shares > 1):
-        raise ValueError(
-            "All initial strategy shares must be strictly positive and <= 1."
-        )
-
-    if not np.isclose(np.sum(initial_shares), 1.0):
-        raise ValueError("Initial strategy shares must sum to 1.")
-
-    # Transform initial conditions into log-ratio coordinates
-    y0_vector = np.array([
-        np.log(y0 / v0),
-        np.log(z0 / v0)
+    initial_weights = np.array([
+        params["initial_shares"][name]
+        for name in names
     ])
+
+    # Automatically normalize weights
+
+    initial_shares = normalize_shares(initial_weights)
+
+    # Initial reputations
+
+    initial_reputations = np.array([
+        params["initial_reputations"][name]
+        for name in names
+    ])
+
+    # Transform initial shares into log-ratio coordinates
+
+    u0 = np.log(
+        initial_shares[1:] / initial_shares[0]
+    )
+
+
+    # Initial reputations
+
+    initial_reputations = np.array([
+        params["initial_reputations"][name]
+        for name in names
+    ])
+
+    # Validate initial conditions
+
+    if np.any(initial_shares <= 0):
+        raise ValueError("Strategy shares must be positive")
+
+    if np.any(initial_reputations < 0) or np.any(initial_reputations > 1):
+        raise ValueError("Reputations must be between 0 and 1.")
+
+    # Transform strategy shares into log-ratio coordinates
+
+    u0 = np.log(initial_shares[1:] / initial_shares[0])
+
+    # Complete initial state
+
+    y0 = np.concatenate((u0, initial_reputations))
 
     t_eval = np.linspace(t_start, t_end, t_points)
 
     solution = solve_ivp(
         fun=replicator_eq,
         t_span=(t_start, t_end),
-        y0=y0_vector,
+        y0=y0,
         t_eval=t_eval,
         args=(params,),
         method="DOP853",
-        rtol=1e-8,
-        atol=1e-10,
+        rtol=simulation["rtol"],
+        atol=simulation["atol"],
         events=[convergence_event]
     )
 
@@ -166,71 +313,85 @@ def run_simulation(params, initial_conditions):
         raise RuntimeError(solution.message)
 
     # Reconstruct strategy shares
-    u_y, u_z = solution.y
 
-    max_u = np.maximum.reduce([
-        np.zeros_like(u_y),
-        u_y,
-        u_z
-    ])
+    u = solution.y[:n-1]
 
-    exp_y = np.exp(u_y - max_u)
-    exp_z = np.exp(u_z - max_u)
-    exp_v = np.exp(-max_u)
+    shares = np.array([
+        shares_from_logits(u[:, i])
+        for i in range(len(solution.t))
+    ]).T
 
-    denominator = exp_y + exp_z + exp_v
+    # Extract reputations
 
-    y = exp_y / denominator
-    z = exp_z / denominator
-    v = exp_v / denominator
+    reputations = solution.y[n-1:]
 
-    # Replace logarithmic solution with strategy shares
-    solution.y = np.vstack([y, z, v])
+    # Store all variables
 
-    # Print final strategy shares
+    solution.y = np.vstack((shares, reputations))
+
+    # Print final results
+
     print("\nFinal strategy shares:")
-    print(f"y(T) = {y[-1]:.6f}")
-    print(f"z(T) = {z[-1]:.6f}")
-    print(f"v(T) = {v[-1]:.6f}")
+
+    for i, name in enumerate(names):
+        print(f"{name}(T) = {shares[i, -1]:.6f}")
+
+    print("\nFinal reputations:")
+
+    for i, name in enumerate(names):
+        print(f"g_{name}(T) = {reputations[i, -1]:.6f}")
 
     # Check normalization
-    total = y + z + v
 
-    if not np.allclose(total, 1.0, atol=1e-10):
+    if not np.allclose(np.sum(shares, axis=0), 1.0, atol=1e-10):
         raise RuntimeError("Normalization condition violated!")
 
     if len(solution.t_events[0]) > 0:
-        print("Convergence reached.")
+        print("\nConvergence reached.")
     else:
-        print("Maximum simulation time reached.")
+        print("\nMaximum simulation time reached.")
 
     return solution
 
-def plot_solution(solution, params, initial_conditions):
+
+def plot_solution(solution, params):
 
     t = solution.t
-    y, z, v = solution.y
+
+    names = list(params["strategies"].keys())
+
+    n = len(names)
+
+    # Extract variables
+
+    shares = solution.y[:n]
+    reputations = solution.y[n:]
 
     # Create parameter-specific directory
-    parameter_folder = f"b={params['b']:g}_s={params['s']:g}_q={params['q']:g}"
+
+    parameter_folder = (
+        f"b={params['b']:g}_"
+        f"s={params['s']:g}_"
+        f"q={params['q']:g}"
+    )
 
     save_dir = Path("results") / parameter_folder
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # Initial conditions
-    y0, z0 = initial_conditions
-    v0 = 1 - y0 - z0
+    # ========================================================
+    # Plot 1: Strategy dynamics
+    # ========================================================
 
-    filename = f"IC_y={y0:g}_z={z0:g}_v={v0:g}.png"
-
-    filepath = save_dir / filename
-
-    # Create plot
     plt.figure(figsize=(10, 6))
 
-    plt.plot(t, y, label="ALLD", linewidth=2)
-    plt.plot(t, z, label="Discriminator", linewidth=2)
-    plt.plot(t, v, label="Pure Virtue Signaling", linewidth=2)
+    for i, name in enumerate(names):
+
+        plt.plot(
+            t,
+            shares[i],
+            label=name,
+            linewidth=2
+        )
 
     plt.xlabel("Time")
     plt.ylabel("Strategy share")
@@ -241,286 +402,56 @@ def plot_solution(solution, params, initial_conditions):
     plt.legend()
     plt.tight_layout()
 
+    filepath = save_dir / "strategies.png"
+
     plt.savefig(filepath, dpi=300, bbox_inches="tight")
-
-    print(f"Plot saved to: {filepath}")
-
+    plt.show()
     plt.close()
 
+    # ========================================================
+    # Plot 2: Reputation dynamics
+    # ========================================================
+
+    plt.figure(figsize=(10, 6))
+
+    for i, name in enumerate(names):
+
+        plt.plot(
+            t,
+            reputations[i],
+            label=f"$g_{{{name}}}$",
+            linewidth=2
+        )
+
+    plt.xlabel("Time")
+    plt.ylabel("Fraction with good reputation")
+    plt.title("Reputation Dynamics")
+
+    plt.ylim(-0.02, 1.02)
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+
+    filepath = save_dir / "reputations.png"
+
+    plt.savefig(filepath, dpi=300, bbox_inches="tight")
+    plt.show()
+    plt.close()
+
+    print(f"\nPlots saved to: {save_dir}")
 
 def run_single_test():
 
-    print("Running single test...")
+    print("Loading configuration...")
 
-    solution = run_simulation(
-        BASE_PARAMS,
-        TEST_INITIAL
-    )
+    params = load_config("config.json")
 
-    plot_solution(solution, BASE_PARAMS, TEST_INITIAL)
+    print("\nRunning simulation...")
 
+    solution = run_simulation(params)
 
-def run_parameter_sweep():
+    plot_solution(solution, params)
 
-    print("Running parameter sweep...")
-
-    parameter_names = list(PARAMETER_GRID.keys())
-    parameter_values = list(PARAMETER_GRID.values())
-
-    results = []
-    failed_simulations = []
-
-    strategy_names = [
-        "ALLD",
-        "Discriminator",
-        "Pure Virtue Signaling"
-    ]
-
-    for values in product(*parameter_values):
-
-        params = BASE_PARAMS.copy()
-
-        for name, value in zip(parameter_names, values):
-            params[name] = value
-
-        for initial in INITIAL_CONDITIONS:
-
-            try:
-                solution = run_simulation(params, initial)
-
-                plot_solution(solution, params, initial)
-
-                # Extract reconstructed strategy shares
-                y, z, v = solution.y
-
-                # Check whether the convergence event was triggered
-                converged = len(solution.t_events[0]) > 0
-
-                if converged:
-                    final_shares = np.array([
-                        solution.y[0, -1],
-                        solution.y[1, -1],
-                        solution.y[2, -1]
-                    ])
-
-                    winner = strategy_names[np.argmax(final_shares)]
-                else:
-                    winner = "No winner"
-
-                results.append({
-                    "params": params.copy(),
-                    "initial": initial,
-                    "final_y": solution.y[0, -1],
-                    "final_z": solution.y[1, -1],
-                    "final_v": solution.y[2, -1],
-                    "winner": winner,
-                    "converged": converged
-                })
-
-                print(
-                    f"b={params['b']}, "
-                    f"c={params['c']}, "
-                    f"s={params['s']}, "
-                    f"q={params['q']} | "
-                    f"Initial={initial} | "
-                    f"Final={[round(y[-1], 3), round(z[-1], 3), round(v[-1], 3)]} | "
-                    f"Winner={winner}"
-                )
-
-            except (RuntimeError, ValueError) as error:
-
-                print("\nSimulation failed. Skipping...")
-                print(
-                    f"b={params['b']}, "
-                    f"c={params['c']}, "
-                    f"s={params['s']}, "
-                    f"q={params['q']} | "
-                    f"Initial={initial}"
-                )
-                print(f"Error: {error}")
-
-                failed_simulations.append({
-                    "params": params.copy(),
-                    "initial": initial,
-                    "error": str(error)
-                })
-
-                continue
-
-    print("\nParameter sweep completed.")
-    print(f"Successful simulations: {len(results)}")
-    print(f"Failed simulations: {len(failed_simulations)}")
-
-    return results, failed_simulations
-
-
-def plot_winner_map(results):
-
-    b_values = PARAMETER_GRID["b"]
-    s_values = PARAMETER_GRID["s"]
-    q_values = PARAMETER_GRID["q"]
-
-    strategy_names = [
-        "ALLD",
-        "Discriminator",
-        "Pure Virtue Signaling"
-    ]
-
-    categories = strategy_names + ["No winner"]
-
-    colors = [
-        "tab:red",
-        "tab:green",
-        "tab:purple",
-        "lightgray"
-    ]
-
-    cmap = ListedColormap(colors)
-    norm = BoundaryNorm(
-        np.arange(-0.5, len(categories) + 0.5, 1),
-        cmap.N
-    )
-
-    for q in q_values:
-
-        winner_grid = np.full(
-            (len(s_values), len(b_values)),
-            len(categories) - 1
-        )
-
-        for i, s in enumerate(s_values):
-            for j, b in enumerate(b_values):
-
-                matching_results = [
-                    r for r in results
-                    if r["params"]["b"] == b
-                    and r["params"]["s"] == s
-                    and r["params"]["q"] == q
-                ]
-
-                if not matching_results:
-                    continue
-
-                winner_counts = {
-                    strategy: sum(
-                        r["winner"] == strategy
-                        for r in matching_results
-                    )
-                    for strategy in strategy_names
-                }
-
-                no_winner_count = sum(
-                    r["winner"] == "No winner"
-                    for r in matching_results
-                )
-
-                max_wins = max(winner_counts.values())
-
-                winners = [
-                    strategy
-                    for strategy, count in winner_counts.items()
-                    if count == max_wins
-                ]
-
-                if (
-                    len(winners) == 1
-                    and max_wins > no_winner_count
-                ):
-                    winner_grid[i, j] = strategy_names.index(
-                        winners[0]
-                    )
-                else:
-                    winner_grid[i, j] = len(strategy_names)
-
-        # Create figure
-        fig, ax = plt.subplots(figsize=(9, 7))
-
-        im = ax.imshow(
-            winner_grid,
-            cmap=cmap,
-            norm=norm,
-            origin="lower",
-            aspect="equal",
-            interpolation="none"
-        )
-
-        ax.set_xticks(range(len(b_values)))
-        ax.set_xticklabels(b_values)
-
-        ax.set_yticks(range(len(s_values)))
-        ax.set_yticklabels(s_values)
-
-        ax.set_xlabel("Benefit (b)")
-        ax.set_ylabel("Signaling cost (s)")
-        ax.set_title(f"Winning Strategy (q={q:g})")
-
-        # Grid lines
-        ax.set_xticks(
-            np.arange(-0.5, len(b_values), 1),
-            minor=True
-        )
-        ax.set_yticks(
-            np.arange(-0.5, len(s_values), 1),
-            minor=True
-        )
-
-        ax.grid(
-            which="minor",
-            color="black",
-            linewidth=0.5
-        )
-
-        ax.tick_params(
-            which="minor",
-            bottom=False,
-            left=False
-        )
-
-        # Colorbar
-        cbar = fig.colorbar(
-            im,
-            ax=ax,
-            ticks=range(len(categories))
-        )
-
-        cbar.ax.set_yticklabels(categories)
-
-        plt.tight_layout()
-
-        # Save figure
-        save_dir = Path("results") / "winner_maps"
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        filepath = save_dir / f"winner_map_q={q:g}.png"
-
-        plt.savefig(
-            filepath,
-            dpi=300,
-            bbox_inches="tight"
-        )
-
-        print(f"Winner map saved to: {filepath}")
-
-        plt.close()
-
-def main():
-
-    if RUN_MODE == "test":
-
-        run_single_test()
-
-    elif RUN_MODE == "sweep":
-
-        results, failed_simulations = run_parameter_sweep()
-
-        plot_winner_map(results)
-
-        for failure in failed_simulations:
-            print(failure)
-
-    else:
-
-        raise ValueError("Unknown RUN_MODE.")
 
 if __name__ == "__main__":
-    main()
+    run_single_test()
