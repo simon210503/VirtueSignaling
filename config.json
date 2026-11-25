@@ -3,7 +3,7 @@
     "b": 2.0,
     "c": 1.0,
     "s": 0.5,
-    "q": 0.6
+    "q": 0.9
   },
 
   "reputation_mechanism": [
@@ -25,17 +25,17 @@
   "ALLD": {
     "enabled": true,
     "share": 1,
-    "reputation": 0.9
+    "reputation": 0.5
   },
   "ALLD_VS": {
     "enabled": true,
     "share": 1,
-    "reputation": 0.1
+    "reputation": 0.5
   },
   "DISC": {
     "enabled": true,
     "share": 1,
-    "reputation": 0.1
+    "reputation": 0.5
   },
   "DISC_VS": {
     "enabled": false,
@@ -45,14 +45,15 @@
 },
 
   "simulation": {
-    "t_start": 0.0,
-    "t_end": 1000.0,
-    "t_points": 15000,
-    "rtol": 1e-8,
-    "atol": 1e-10,
+  "n_rounds": 1,
+  "n_generations": 100000,
+  "selection_strength": 1e-3,
+  "reputation_step": 1.0,
+  "reset_reputations": true,
+  "save_history": false,
 
-    "share_tolerance": 1e-9,
-    "reputation_tolerance": 1e-9,
-    "dominance_threshold": 1e-6
-  }
+  "share_tolerance": 1e-9,
+  "reputation_tolerance": 1e-9,
+  "dominance_threshold": 1e-6
+}
 }

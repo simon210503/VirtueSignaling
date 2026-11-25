@@ -8,6 +8,10 @@ from pathlib import Path
 from datetime import datetime
 
 
+"""
+Model with a rudamentary update system
+"""
+
 def create_strategy(name, rmech):
     if name in ["ALLC", "ALLC_VS"]:
         return [0, 0, 0, 0]
