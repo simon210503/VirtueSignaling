@@ -1,0 +1,65 @@
+{
+    "parameters": {
+        "b": 2.0,
+        "c": 1.0,
+        "s": 0.25,
+        "q": 0.1
+    },
+    "reputation_mechanism": [
+        [
+            1,
+            1,
+            1,
+            1
+        ],
+        [
+            0,
+            1,
+            0,
+            0
+        ]
+    ],
+    "strategies": {
+        "ALLC": {
+            "enabled": false,
+            "share": 2,
+            "reputation": 0.1
+        },
+        "ALLC_VS": {
+            "enabled": false,
+            "share": 2,
+            "reputation": 0.1
+        },
+        "ALLD": {
+            "enabled": true,
+            "share": 1,
+            "reputation": 0.5
+        },
+        "ALLD_VS": {
+            "enabled": true,
+            "share": 1,
+            "reputation": 0.5
+        },
+        "DISC": {
+            "enabled": true,
+            "share": 1,
+            "reputation": 0.5
+        },
+        "DISC_VS": {
+            "enabled": false,
+            "share": 2,
+            "reputation": 0.0
+        }
+    },
+    "simulation": {
+        "n_rounds": 100,
+        "n_generations": 100000,
+        "selection_strength": 0.001,
+        "reputation_step": 1.0,
+        "reset_reputations": true,
+        "save_history": false,
+        "share_tolerance": 1e-09,
+        "reputation_tolerance": 1e-09,
+        "dominance_threshold": 1e-06
+    }
+}

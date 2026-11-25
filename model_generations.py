@@ -410,7 +410,6 @@ def save_results(result, params, runtime):
             "winner": winner,
             "coexisting_strategies": result["coexisting_strategies"],
             "convergence_generation": result["convergence_generation"],
-            "n_generations_run": int(history["generation"][-1]) + 1,
             "runtime_seconds": float(runtime),
         },
         "final_state": {
@@ -478,19 +477,24 @@ def save_results(result, params, runtime):
     return filepath
  
  
+
 def run_simulation(config_path="config.json"):
+
     print("Loading configuration...")
     params = load_config(config_path)
- 
+
     print("\nRunning simulation...")
     start = time.perf_counter()
+
     result = solver(params)
+
     runtime = time.perf_counter() - start
 
-    result["runtime_seconds"] = runtime
- 
-    save_results(result, params, runtime)
+    # Laufzeit direkt im Ergebnis speichern
+    result["runtime_seconds"] = float(runtime)
+
     return result, params
+
  
  
 if __name__ == "__main__":

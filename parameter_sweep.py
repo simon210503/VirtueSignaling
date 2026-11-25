@@ -137,12 +137,13 @@ def run_parameter_sweep():
             )
 
             try:
-                # Simulation starten
+
+                # Simulation ausführen
                 result, params = run_simulation(
                     config_path=str(temp_config)
                 )
 
-                # Ergebnisse auslesen
+                # Ergebnisse direkt aus result auslesen
                 row = {
                     "run": run_number,
 
@@ -158,9 +159,7 @@ def run_parameter_sweep():
                         "convergence_generation"
                     ),
 
-                    "runtime_seconds": result.get(
-                        "runtime_seconds"
-                    )
+                    "runtime_seconds": result.get("runtime_seconds")
                 }
 
                 # Inputparameter ergänzen
@@ -171,6 +170,9 @@ def run_parameter_sweep():
                 file.flush()
 
             except Exception as error:
+
+                import traceback
+                traceback.print_exc()
 
                 print(f"Error in simulation {run_number}: {error}")
 
