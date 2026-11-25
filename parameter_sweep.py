@@ -26,41 +26,8 @@ def define_parameter_variations():
     variations = {
 
         # Modellparameter
-        ("parameters", "b"): [2.0, 3.0, 4.0],
-        ("parameters", "c"): [1.0],
         ("parameters", "s"): [0.25, 0.5, 0.75],
         ("parameters", "q"): [0.1, 0.5, 0.7, 0.9, 1.0],
-
-        # Simulationsparameter
-        ("simulation", "selection_strength"): [
-            1e-4, 1e-3, 1e-2, 1e-1
-        ],
-
-        # Anfangsbedingungen: Shares
-        ("strategies", "ALLD", "share"): [
-            1,2,3,10,100
-        ],
-
-        ("strategies", "DISC", "share"): [
-            1,2,3,10,100
-        ],
-
-        ("strategies", "ALLD_VS", "share"): [
-            1,2,3,10,100
-        ],
-
-        # Anfangsbedingungen: Reputationen
-        ("strategies", "ALLD", "reputation"): [
-            0.0, 0.5, 1.0
-        ],
-
-        ("strategies", "DISC", "reputation"): [
-            0.0, 0.5, 1.0
-        ],
-
-        ("strategies", "ALLD_VS", "reputation"): [
-            0.0, 0.5, 1.0
-        ]
     }
 
     return variations
@@ -105,6 +72,7 @@ def make_parameter_label(keys):
 # PARAMETER-SWEEP
 # ==================================================
 
+
 def run_parameter_sweep():
 
     base_config = load_config()
@@ -116,7 +84,6 @@ def run_parameter_sweep():
     combinations = itertools.product(*parameter_values)
 
     n_combinations = 1
-
     for values in parameter_values:
         n_combinations *= len(values)
 
@@ -127,31 +94,30 @@ def run_parameter_sweep():
 
     # Ergebnisordner
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
     output_dir = RESULTS_DIR / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Temporäre Konfigurationsdatei
     temp_config = output_dir / "temp_config.json"
-
-    # CSV-Datei für Zusammenfassung
     csv_file = output_dir / "summary.csv"
 
-    fieldnames = [
-        "run"
-    ] + [
-        make_parameter_label(name)
-        for name in parameter_names
-    ] + [
-        "runtime"
-    ]
+    # CSV-Spalten definieren
+    fieldnames = (
+        ["run"]
+        + [make_parameter_label(name) for name in parameter_names]
+        + [
+            "outcome",
+            "winner",
+            "coexisting_strategies",
+            "convergence_generation",
+            "runtime_seconds"
+        ]
+    )
 
     with open(csv_file, "w", newline="", encoding="utf-8") as file:
 
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
 
-        # Simulationen ausführen
         for run_number, combination in enumerate(combinations, start=1):
 
             config = copy.deepcopy(base_config)
@@ -170,16 +136,34 @@ def run_parameter_sweep():
                 f"\nSimulation {run_number}/{n_combinations}"
             )
 
-            # Simulation starten
             try:
+                # Simulation starten
                 result, params = run_simulation(
                     config_path=str(temp_config)
                 )
 
-                # Laufzeit aus der Simulation übernehmen,
-                # sofern sie in params gespeichert ist.
-                row = {"run": run_number}
+                # Ergebnisse auslesen
+                row = {
+                    "run": run_number,
 
+                    "outcome": result.get("outcome"),
+                    "winner": result.get("winner"),
+
+                    "coexisting_strategies": json.dumps(
+                        result.get("coexisting_strategies"),
+                        ensure_ascii=False
+                    ),
+
+                    "convergence_generation": result.get(
+                        "convergence_generation"
+                    ),
+
+                    "runtime_seconds": result.get(
+                        "runtime_seconds"
+                    )
+                }
+
+                # Inputparameter ergänzen
                 for name, value in current_values.items():
                     row[make_parameter_label(name)] = value
 
@@ -190,17 +174,22 @@ def run_parameter_sweep():
 
                 print(f"Error in simulation {run_number}: {error}")
 
-                row = {"run": run_number}
+                row = {
+                    "run": run_number,
+                    "outcome": "ERROR",
+                    "winner": None,
+                    "coexisting_strategies": None,
+                    "convergence_generation": None,
+                    "runtime_seconds": None
+                }
 
                 for name, value in current_values.items():
                     row[make_parameter_label(name)] = value
 
-                row["runtime"] = "ERROR"
-
                 writer.writerow(row)
                 file.flush()
 
-    # Temporäre Datei entfernen
+    # Temporäre Konfigurationsdatei entfernen
     if temp_config.exists():
         temp_config.unlink()
 

@@ -1,0 +1,93 @@
+{
+    "simulation": {
+        "outcome": "dominance",
+        "winner": "ALLD",
+        "coexisting_strategies": null,
+        "convergence_generation": 27634,
+        "n_generations_run": 27635,
+        "runtime_seconds": 2.112181075004628
+    },
+    "final_state": {
+        "shares": {
+            "ALLD": 0.999999000491564,
+            "ALLD_VS": 9.985106686117011e-07,
+            "DISC": 9.977673335532669e-10
+        },
+        "mean_payoff_per_round": {
+            "ALLD": 1.4966510003299004e-09,
+            "ALLD_VS": -0.499999998503349,
+            "DISC": -0.749999998503349
+        },
+        "reputations_end_of_generation": {
+            "ALLD": 0.25,
+            "ALLD_VS": 0.7749999999999999,
+            "DISC": 1.0
+        }
+    },
+    "cycle_visits": [],
+    "input": {
+        "parameters": {
+            "b": 2.0,
+            "c": 1.0,
+            "s": 0.5,
+            "q": 0.7
+        },
+        "reputation_mechanism": [
+            [
+                1,
+                1,
+                1,
+                1
+            ],
+            [
+                0,
+                1,
+                0,
+                0
+            ]
+        ],
+        "strategies": {
+            "ALLC": {
+                "enabled": false,
+                "share": 2,
+                "reputation": 0.1
+            },
+            "ALLC_VS": {
+                "enabled": false,
+                "share": 2,
+                "reputation": 0.1
+            },
+            "ALLD": {
+                "enabled": true,
+                "share": 1,
+                "reputation": 0.5
+            },
+            "ALLD_VS": {
+                "enabled": true,
+                "share": 1,
+                "reputation": 0.5
+            },
+            "DISC": {
+                "enabled": true,
+                "share": 1,
+                "reputation": 0.5
+            },
+            "DISC_VS": {
+                "enabled": false,
+                "share": 2,
+                "reputation": 0.0
+            }
+        },
+        "simulation": {
+            "n_rounds": 1,
+            "n_generations": 100000,
+            "selection_strength": 0.001,
+            "reputation_step": 1.0,
+            "reset_reputations": true,
+            "save_history": false,
+            "share_tolerance": 1e-09,
+            "reputation_tolerance": 1e-09,
+            "dominance_threshold": 1e-06
+        }
+    }
+}

@@ -486,6 +486,8 @@ def run_simulation(config_path="config.json"):
     start = time.perf_counter()
     result = solver(params)
     runtime = time.perf_counter() - start
+
+    result["runtime_seconds"] = runtime
  
     save_results(result, params, runtime)
     return result, params

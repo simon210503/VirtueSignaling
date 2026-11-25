@@ -45,7 +45,7 @@
 },
 
   "simulation": {
-  "n_rounds": 1,
+  "n_rounds": 100,
   "n_generations": 100000,
   "selection_strength": 1e-3,
   "reputation_step": 1.0,

@@ -5,7 +5,6 @@ from plotting import (
     plot_round_reputations
 )
  
- 
 def main():
  
     result, params = run_simulation()

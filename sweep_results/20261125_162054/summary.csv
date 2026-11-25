@@ -1,0 +1,16 @@
+run,parameters.s,parameters.q,outcome,winner,coexisting_strategies,convergence_generation,n_generations_run,runtime_seconds
+1,0.25,0.1,dominance,ALLD,null,55263,4,4.584516989001713
+2,0.25,0.5,dominance,ALLD,null,55263,4,4.104851561001851
+3,0.25,0.7,dominance,ALLD,null,55263,4,3.85950481799955
+4,0.25,0.9,dominance,ALLD,null,55263,4,4.048156087999814
+5,0.25,1.0,dominance,ALLD,null,55263,4,3.968484045995865
+6,0.5,0.1,dominance,ALLD,null,27634,4,1.9773703399987426
+7,0.5,0.5,dominance,ALLD,null,27634,4,1.8983350269991206
+8,0.5,0.7,dominance,ALLD,null,27634,4,1.9312326699946425
+9,0.5,0.9,dominance,ALLD,null,27634,4,1.984725428999809
+10,0.5,1.0,dominance,ALLD,null,27634,4,1.90492491099576
+11,0.75,0.1,dominance,ALLD,null,19345,4,1.3575052239975776
+12,0.75,0.5,dominance,ALLD,null,19345,4,1.4043238239974016
+13,0.75,0.7,dominance,ALLD,null,19345,4,1.290841558999091
+14,0.75,0.9,dominance,ALLD,null,19345,4,1.3707846769975731
+15,0.75,1.0,dominance,ALLD,null,19345,4,1.3681454159959685
