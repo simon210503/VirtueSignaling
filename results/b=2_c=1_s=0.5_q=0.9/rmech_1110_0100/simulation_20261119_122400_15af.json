@@ -1,0 +1,91 @@
+{
+    "simulation": {
+        "converged": true,
+        "convergence_time": 177.5729999704273,
+        "runtime_seconds": 0.2335689249994175,
+        "outcome": "dominance",
+        "winner": "DISC"
+    },
+    "final_state": {
+        "shares": {
+            "ALLC": 3.2982560425215855e-55,
+            "ALLC_VS": 2.206644749730743e-93,
+            "ALLD": 5.180328624790996e-10,
+            "ALLD_VS": 1.006305055764281e-18,
+            "DISC": 0.999999999481967,
+            "DISC_VS": 7.972550375732221e-39
+        },
+        "reputations": {
+            "ALLC": 1.0,
+            "ALLC_VS": 1.0,
+            "ALLD": 0.0,
+            "ALLD_VS": 0.9000000010466229,
+            "DISC": 1.0,
+            "DISC_VS": 1.0
+        }
+    },
+    "input": {
+        "parameters": {
+            "b": 2.0,
+            "c": 1.0,
+            "s": 0.5,
+            "q": 0.9
+        },
+        "reputation_mechanism": [
+            [
+                1,
+                1,
+                1,
+                0
+            ],
+            [
+                0,
+                1,
+                0,
+                0
+            ]
+        ],
+        "strategies": {
+            "ALLC": {
+                "enabled": true,
+                "share": 2,
+                "reputation": 0.1
+            },
+            "ALLC_VS": {
+                "enabled": true,
+                "share": 2,
+                "reputation": 0.1
+            },
+            "ALLD": {
+                "enabled": true,
+                "share": 2,
+                "reputation": 0.0
+            },
+            "ALLD_VS": {
+                "enabled": true,
+                "share": 2,
+                "reputation": 0.0
+            },
+            "DISC": {
+                "enabled": true,
+                "share": 2,
+                "reputation": 0.0
+            },
+            "DISC_VS": {
+                "enabled": true,
+                "share": 2,
+                "reputation": 0.1
+            }
+        },
+        "simulation": {
+            "t_start": 0.0,
+            "t_end": 1000.0,
+            "t_points": 15000,
+            "rtol": 1e-08,
+            "atol": 1e-10,
+            "share_tolerance": 1e-09,
+            "reputation_tolerance": 1e-09,
+            "dominance_threshold": 1e-06
+        }
+    }
+}
