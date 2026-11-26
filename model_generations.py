@@ -1,16 +1,39 @@
 import json
 import time
 import uuid
+import warnings
 import numpy as np
- 
+
 from pathlib import Path
 from datetime import datetime
- 
- 
+
+# ============================================================
+# Numba (optional). Ohne Numba läuft derselbe Code als reines Python,
+# nur deutlich langsamer.
+# ============================================================
+
+try:
+    from numba import njit
+    NUMBA_AVAILABLE = True
+except ImportError:
+    NUMBA_AVAILABLE = False
+
+    def njit(*args, **kwargs):
+        if len(args) == 1 and callable(args[0]) and not kwargs:
+            return args[0]
+        return lambda func: func
+
+    warnings.warn(
+        "Numba nicht gefunden: Simulation läuft im langsamen Python-Modus. "
+        "Installation: pip install numba",
+        stacklevel=2,
+    )
+
+
 # ============================================================
 # Strategien & Config
 # ============================================================
- 
+
 def create_strategy(name, rmech):
     if name in ["ALLC", "ALLC_VS"]:
         return [0, 0, 0, 0]
@@ -23,33 +46,38 @@ def create_strategy(name, rmech):
         ]
     else:
         raise ValueError(f"Unknown strategy: {name}")
- 
- 
-def load_config(filepath="config.json"):
-    with open(filepath, "r") as file:
-        config = json.load(file)
- 
+
+
+def parse_config(config):
+    """Baut die Parameter aus einem Config-Dictionary (statt aus einer Datei)."""
     params = dict(config["parameters"])
     params["input_config"] = config
- 
+
     rmech = config["reputation_mechanism"]
     strategies, signaling = {}, {}
- 
+
     for name, settings in config["strategies"].items():
         if not settings["enabled"]:
             continue
         strategies[name] = create_strategy(name, rmech)
         signaling[name] = name.endswith("_VS")
- 
+
     params["rmech"] = rmech
     params["strategies"] = strategies
     params["signaling"] = signaling
     params["initial_shares"] = {n: config["strategies"][n]["share"] for n in strategies}
     params["initial_reputations"] = {n: config["strategies"][n]["reputation"] for n in strategies}
     params["simulation"] = config["simulation"]
+    params["model"] = build_model(params)
     return params
- 
- 
+
+
+def load_config(filepath="config.json"):
+    with open(filepath, "r") as file:
+        config = json.load(file)
+    return parse_config(config)
+
+
 def normalize_shares(weights):
     weights = np.asarray(weights, dtype=float)
     if np.any(weights < 0):
@@ -58,352 +86,449 @@ def normalize_shares(weights):
     if total <= 0:
         raise ValueError("The sum of initial weights must be positive.")
     return weights / total
- 
- 
-def softmax(logits):
-    logits = logits - np.max(logits)
-    e = np.exp(logits)
-    return e / np.sum(e)
- 
- 
-# ============================================================
-# Reputation & Payoff
-# ============================================================
- 
-def reputation_probabilities(g_i, g):
-    return [
-        g_i * g,
-        g_i * (1 - g),
-        (1 - g_i) * g,
-        (1 - g_i) * (1 - g)
-    ]
- 
- 
-def update_reputation(g_i, g, rmech, strategy, signaling, q):
-    """Rechte Seite F(g_i) der bisherigen Reputations-DGL: g_i' = F - g_i."""
-    probabilities = reputation_probabilities(g_i, g)
-    assessments = [rmech[strategy[j]][j] for j in range(4)]
- 
-    if signaling:
-        assessments = [q if a == 0 else a for a in assessments]
- 
-    return sum(probabilities[j] * assessments[j] for j in range(4))
- 
- 
-def cooperation_probability(strategy, g_i, g):
-    probabilities = reputation_probabilities(g_i, g)
-    return sum(probabilities[j] * (1 - strategy[j]) for j in range(4))
- 
- 
-def payoff(shares, reputations, strategies, params):
-    """Auszahlung pro Runde bei festen Anteilen und aktuellen Reputationen."""
-    b, c, s = params["b"], params["c"], params["s"]
-    signaling = params["signaling"]
- 
-    g = np.dot(shares, reputations)
-    names = list(strategies.keys())
-    payoffs = []
- 
-    for i, name_i in enumerate(names):
-        benefit = sum(
-            shares[j] * b * cooperation_probability(
-                strategies[name_j], reputations[j], reputations[i]
-            )
-            for j, name_j in enumerate(names)
-        )
-        cost = c * cooperation_probability(strategies[name_i], reputations[i], g)
-        signaling_cost = s if signaling[name_i] else 0.0
-        payoffs.append(benefit - cost - signaling_cost)
- 
-    return g, np.array(payoffs)
- 
- 
-def reputation_step(shares, reputations, params, dt):
+
+
+def build_model(params):
     """
-    Diskreter Reputationsschritt (Anteile sind fix).
- 
-    g_i(t+1) = g_i(t) + dt * (F_i - g_i(t))
+    Einmalige Vorberechnung aller Größen, die nur von Strategien und Config
+    abhängen (nicht vom Zustand).
+
+      coop        (n,4): 1 - Strategie, d.h. Kooperationsentscheidung je Fall
+      assess      (n,4): Bewertung der Handlung je Fall (inkl. q bei Signaling)
+      signal_cost (n,) : s für Signaling-Strategien, sonst 0
     """
     names = list(params["strategies"].keys())
-    g = np.dot(shares, reputations)
- 
-    new = np.empty_like(reputations)
-    for i, name in enumerate(names):
-        F = update_reputation(
-            reputations[i], g, params["rmech"],
-            params["strategies"][name], params["signaling"][name], params["q"]
+    rmech = params["rmech"]
+    q = params["q"]
+
+    S = np.array([params["strategies"][nm] for nm in names], dtype=int)
+    sig = np.array([params["signaling"][nm] for nm in names], dtype=bool)
+
+    assess = np.array(
+        [[rmech[S[i, j]][j] for j in range(4)] for i in range(len(names))],
+        dtype=float
+    )
+    assess = np.where(sig[:, None] & (assess == 0), q, assess)
+
+    return {
+        "coop": np.ascontiguousarray(1.0 - S, dtype=np.float64),
+        "assess": np.ascontiguousarray(assess, dtype=np.float64),
+        "signal_cost": np.ascontiguousarray(params["s"] * sig, dtype=np.float64),
+        "b": float(params["b"]),
+        "c": float(params["c"]),
+    }
+
+
+# ============================================================
+# Rechenkern (Numba): nur Arrays und Skalare
+# ============================================================
+
+@njit(cache=True)
+def _softmax(u, out):
+    n = u.shape[0]
+    m = u[0]
+    for i in range(1, n):
+        if u[i] > m:
+            m = u[i]
+    total = 0.0
+    for i in range(n):
+        out[i] = np.exp(u[i] - m)
+        total += out[i]
+    for i in range(n):
+        out[i] = out[i] / total
+
+
+@njit(cache=True)
+def _round(shares, r, coop, assess, signal_cost, b, c, dt, pay, new_r):
+    """
+    Eine Runde bei festen Anteilen: Auszahlungen pay (bei Reputationen r) und
+    neue Reputationen new_r.
+
+    Die vier Fälle (Donor-Reputation r_i, Population g) haben die
+    Wahrscheinlichkeiten  U[i,k] * Vg[k]  mit
+        U[i] = [r_i, r_i, 1-r_i, 1-r_i],   Vg = [g, 1-g, g, 1-g].
+    """
+    n = shares.shape[0]
+
+    g = 0.0
+    for i in range(n):
+        g += shares[i] * r[i]
+
+    # s[k] = sum_i shares[i] * U[i,k] * coop[i,k]
+    s0 = 0.0
+    s1 = 0.0
+    s2 = 0.0
+    s3 = 0.0
+    for i in range(n):
+        ri = r[i]
+        s0 += shares[i] * ri * coop[i, 0]
+        s1 += shares[i] * ri * coop[i, 1]
+        s2 += shares[i] * (1.0 - ri) * coop[i, 2]
+        s3 += shares[i] * (1.0 - ri) * coop[i, 3]
+
+    for i in range(n):
+        ri = r[i]
+        benefit = b * (ri * s0 + (1.0 - ri) * s1 + ri * s2 + (1.0 - ri) * s3)
+        own = (
+            ri * coop[i, 0] * g
+            + ri * coop[i, 1] * (1.0 - g)
+            + (1.0 - ri) * coop[i, 2] * g
+            + (1.0 - ri) * coop[i, 3] * (1.0 - g)
         )
-        new[i] = reputations[i] + dt * (F - reputations[i])
- 
-    return np.clip(new, 0.0, 1.0)
- 
- 
-# ============================================================
-# Eine Generation: n Runden (Anteile fix, nur Reputationen ändern sich)
-# ============================================================
- 
-def run_generation(shares, reputations, params):
-    sim = params["simulation"]
-    n_rounds = sim.get("n_rounds", 10)
-    dt = sim.get("reputation_step", 1.0)
- 
-    total_payoffs = np.zeros(len(shares))
-    trajectory = [reputations.copy()]
- 
-    for _ in range(n_rounds):
-        _, round_payoffs = payoff(shares, reputations, params["strategies"], params)
-        total_payoffs += round_payoffs
-        reputations = reputation_step(shares, reputations, params, dt)
-        trajectory.append(reputations.copy())
- 
-    return reputations, total_payoffs, np.array(trajectory)
- 
- 
-# ============================================================
-# Klassifikation des aktuellen Zustands
-# ============================================================
- 
-def assess_state(shares, payoffs, share_change, rep_change, sim):
+        pay[i] = benefit - c * own - signal_cost[i]
+
+        F = (
+            ri * assess[i, 0] * g
+            + ri * assess[i, 1] * (1.0 - g)
+            + (1.0 - ri) * assess[i, 2] * g
+            + (1.0 - ri) * assess[i, 3] * (1.0 - g)
+        )
+        v = ri + dt * (F - ri)
+        if v < 0.0:
+            v = 0.0
+        elif v > 1.0:
+            v = 1.0
+        new_r[i] = v
+
+
+@njit(cache=True)
+def _run_generation(shares, rep, coop, assess, signal_cost, b, c, dt,
+                    n_rounds, fix_tol, total_pay, traj, record, pay, new_r):
     """
-    shares, payoffs gehören zusammen: payoffs sind die mittleren Auszahlungen
-    pro Runde, die bei diesen Anteilen erzielt wurden.
- 
-    Rückgabe (kind, w):
-      "dominance"  : Anteil von w >= 1 - dominance_threshold UND kein anderer
-                     hat eine höhere Auszahlung -> eindeutiger Gewinner
-      "invadable"  : Anteil von w >= 1 - dominance_threshold, ABER eine andere
-                     Strategie hat höhere Auszahlung -> kann invadieren
-      "equilibrium": Anteile ändern sich nicht mehr, alle Strategien im Support
-                     haben gleiche Auszahlung, keine fehlende Strategie kann
-                     invadieren (-> Koexistenz)
-      None         : noch nichts davon
+    n_rounds Runden, Anteile fix. rep wird in place auf die End-Reputationen
+    gesetzt, total_pay enthält die Summe der Auszahlungen.
+
+    Sind die Reputationen stabil (Änderung <= fix_tol), liefern alle weiteren
+    Runden dieselbe Auszahlung: Die Restrunden werden mit dieser Auszahlung
+    mitgezählt, die Reputationen aber nicht mehr neu bestimmt.
     """
-    n = len(shares)
-    dom_thr = sim["dominance_threshold"]
-    pay_tol = sim.get("payoff_tolerance", 1e-9)
-    support_thr = sim.get("support_threshold", dom_thr)
- 
-    w = int(np.argmax(shares))
- 
+    n = shares.shape[0]
+
+    for i in range(n):
+        total_pay[i] = 0.0
+    if record:
+        for i in range(n):
+            traj[0, i] = rep[i]
+
+    for k in range(n_rounds):
+        _round(shares, rep, coop, assess, signal_cost, b, c, dt, pay, new_r)
+
+        stable = True
+        for i in range(n):
+            total_pay[i] += pay[i]
+            if abs(new_r[i] - rep[i]) > fix_tol:
+                stable = False
+            rep[i] = new_r[i]
+
+        if record:
+            for i in range(n):
+                traj[k + 1, i] = rep[i]
+
+        if stable:
+            remaining = n_rounds - k - 1
+            if remaining > 0:
+                _round(shares, rep, coop, assess, signal_cost, b, c, dt, pay, new_r)
+                for i in range(n):
+                    total_pay[i] += remaining * pay[i]
+                if record:
+                    for j in range(k + 2, n_rounds + 1):
+                        for i in range(n):
+                            traj[j, i] = rep[i]
+            break
+
+
+@njit(cache=True)
+def _assess(shares, pay, share_change, rep_change,
+            dom_thr, pay_tol, support_thr, share_tol, rep_tol):
+    """
+    Rückgabe (code, w):
+      1 = eindeutiger Gewinner w (Anteil >= 1 - dom_thr und keine andere
+          Strategie hat höhere Auszahlung)
+      2 = Gleichgewicht mit mehreren Strategien (Anteile/Reputationen stabil,
+          gleiche Auszahlung im Support, keine fehlende Strategie kann invadieren)
+      0 = noch nichts davon
+    """
+    n = shares.shape[0]
+
+    w = 0
+    for i in range(1, n):
+        if shares[i] > shares[w]:
+            w = i
+
     if n == 1:
-        return "dominance", w
- 
-    others = np.arange(n) != w
- 
-    # --- nahe an einer Ecke des Simplex -------------------------------------
-    if np.sum(shares[others]) <= dom_thr:
-        if np.max(payoffs[others]) <= payoffs[w] + pay_tol:
-            return "dominance", w
-        return "invadable", w
- 
-    # --- Gleichgewicht mit mehreren Strategien -------------------------------
-    mean_payoff = float(np.dot(shares, payoffs))
-    in_support = shares > support_thr
- 
-    equal_payoffs = np.all(np.abs(payoffs[in_support] - mean_payoff) <= pay_tol)
-    no_invader = np.all(payoffs[~in_support] <= mean_payoff + pay_tol)
- 
+        return 1, w
+
+    sum_others = 0.0
+    max_other_pay = -np.inf
+    for i in range(n):
+        if i != w:
+            sum_others += shares[i]
+            if pay[i] > max_other_pay:
+                max_other_pay = pay[i]
+
+    # nahe an einer Ecke des Simplex
+    if sum_others <= dom_thr:
+        if max_other_pay <= pay[w] + pay_tol:
+            return 1, w
+        return 0, w
+
+    # Gleichgewicht mit mehreren Strategien
+    mean_pay = 0.0
+    for i in range(n):
+        mean_pay += shares[i] * pay[i]
+
+    equal_payoffs = True
+    no_invader = True
+    for i in range(n):
+        if shares[i] > support_thr:
+            if abs(pay[i] - mean_pay) > pay_tol:
+                equal_payoffs = False
+        else:
+            if pay[i] > mean_pay + pay_tol:
+                no_invader = False
+
     if (
         equal_payoffs
         and no_invader
-        and share_change < sim["share_tolerance"]
-        and rep_change < sim["reputation_tolerance"]
+        and share_change < share_tol
+        and rep_change < rep_tol
     ):
-        return "equilibrium", None
- 
-    return None, None
- 
- 
-def log_depth(u, w):
+        return 2, w
+
+    return 0, w
+
+
+@njit(cache=True)
+def _simulate(shares0, rep0, coop, assess, signal_cost, b, c, dt,
+              n_rounds, n_generations, eta, reset, fix_tol,
+              dom_thr, pay_tol, support_thr, share_tol, rep_tol, record):
     """
-    ln(Gesamtanteil der anderen / Anteil des Monopolisten), berechnet aus den
-    Logits. Funktioniert auch dann noch, wenn die Anteile in Floats unterlaufen.
+    Generationenschleife. Rückgabe:
+      (outcome_code, winner, stop_generation, n_run,
+       hist_shares, hist_rep, hist_pay, traj_first, traj_last,
+       last_shares, last_rep, last_pay)
+    outcome_code: 0 nicht konvergiert, 1 Gewinner, 2 Koexistenz.
+    Ohne record sind die hist_/traj_-Arrays nur Platzhalter (1 Zeile).
     """
-    others = np.delete(u, w)
-    m = np.max(others)
-    return float(m + np.log(np.sum(np.exp(others - m))) - u[w])
- 
- 
-def cycle_detected(visits, min_visits):
-    """
-    Zyklus Richtung Rand: mindestens `min_visits` abgeschlossene Besuche, bei
-    denen eine Strategie fast den ganzen Simplex einnimmt, aber invadiert werden
-    kann; verschiedene Monopolisten wechseln sich ab, und jeder Besuch kommt
-    näher an den Rand als der vorige (wachsende Oszillation).
-    """
-    if len(visits) < min_visits:
-        return False
- 
-    last = visits[-min_visits:]
- 
-    if len({v["monopolist"] for v in last}) < 2:
-        return False
- 
-    depths = [v["log_depth"] for v in last]
-    return all(depths[i + 1] < depths[i] for i in range(len(depths) - 1))
- 
- 
+    n = shares0.shape[0]
+
+    n_hist = n_generations if record else 1
+    n_traj = n_rounds + 1 if record else 1
+
+    hist_shares = np.zeros((n_hist, n))
+    hist_rep = np.zeros((n_hist, n))
+    hist_pay = np.zeros((n_hist, n))
+    traj = np.zeros((n_traj, n))
+    traj_first = np.zeros((n_traj, n))
+
+    u = np.log(shares0)
+    u_next = np.zeros(n)
+    shares = np.zeros(n)
+    shares_next = np.zeros(n)
+    rep = rep0.copy()
+    prev_rep = np.zeros(n)
+    total_pay = np.zeros(n)
+    pay = np.zeros(n)
+    new_r = np.zeros(n)
+    mean_pay = np.zeros(n)
+
+    outcome = 0
+    winner = -1
+    stop_generation = -1
+    n_run = 0
+
+    for gen in range(n_generations):
+        _softmax(u, shares)
+
+        if reset:
+            for i in range(n):
+                rep[i] = rep0[i]
+
+        _run_generation(shares, rep, coop, assess, signal_cost, b, c, dt,
+                        n_rounds, fix_tol, total_pay, traj, record, pay, new_r)
+
+        for i in range(n):
+            mean_pay[i] = total_pay[i] / n_rounds
+
+        # Replicator-Schritt (nur vorbereiten; angewendet wird er erst unten).
+        # Es geht die MITTLERE Auszahlung pro Runde ein, dadurch ist die
+        # Selektionsstärke eta unabhängig von n_rounds.
+        m = -np.inf
+        for i in range(n):
+            u_next[i] = u[i] + eta * mean_pay[i]
+            if u_next[i] > m:
+                m = u_next[i]
+        for i in range(n):
+            u_next[i] -= m
+        _softmax(u_next, shares_next)
+
+        share_change = 0.0
+        for i in range(n):
+            d = abs(shares_next[i] - shares[i])
+            if d > share_change:
+                share_change = d
+
+        if gen == 0:
+            rep_change = np.inf
+        else:
+            rep_change = 0.0
+            for i in range(n):
+                d = abs(rep[i] - prev_rep[i])
+                if d > rep_change:
+                    rep_change = d
+        for i in range(n):
+            prev_rep[i] = rep[i]
+
+        if record:
+            for i in range(n):
+                hist_shares[gen, i] = shares[i]
+                hist_rep[gen, i] = rep[i]
+                hist_pay[gen, i] = mean_pay[i]
+            if gen == 0:
+                for j in range(n_traj):
+                    for i in range(n):
+                        traj_first[j, i] = traj[j, i]
+
+        n_run = gen + 1
+
+        code, w = _assess(shares, mean_pay, share_change, rep_change,
+                          dom_thr, pay_tol, support_thr, share_tol, rep_tol)
+
+        if code == 1:
+            outcome = 1
+            winner = w
+            stop_generation = gen
+            break
+        if code == 2:
+            outcome = 2
+            stop_generation = gen
+            break
+
+        for i in range(n):
+            u[i] = u_next[i]
+
+    return (outcome, winner, stop_generation, n_run,
+            hist_shares, hist_rep, hist_pay, traj_first, traj,
+            shares.copy(), rep.copy(), mean_pay.copy())
+
+
+def warm_up():
+    """Kompiliert (bzw. lädt aus dem Cache) den Numba-Kern mit einer Mini-Simulation."""
+    n = 2
+    _simulate(
+        np.array([0.5, 0.5]), np.array([0.5, 0.5]),
+        np.ones((n, 4)), np.ones((n, 4)), np.zeros(n),
+        1.0, 0.5, 1.0, 2, 2, 0.1, True, 1e-12,
+        1e-6, 1e-9, 1e-6, 1e-9, 1e-9, False,
+    )
+
+
 # ============================================================
-# Solver: Schleife über Generationen
+# Solver (Python-Hülle um den Rechenkern)
 # ============================================================
- 
-def solver(params):
+
+OUTCOMES = {0: "not_converged", 1: "dominance", 2: "coexistence"}
+
+MESSAGES = {
+    "dominance": "\nClear winner found.",
+    "coexistence": "\nEquilibrium with multiple strategies reached.",
+    "not_converged": "\nMaximum number of generations reached without classification.",
+}
+
+
+def solver(params, record_history=True, verbose=True):
     sim = params["simulation"]
     names = list(params["strategies"].keys())
     n = len(names)
- 
+
     shares0 = normalize_shares([params["initial_shares"][nm] for nm in names])
     rep0 = np.array([params["initial_reputations"][nm] for nm in names], dtype=float)
- 
+
     if np.any(shares0 <= 0):
         raise ValueError("Strategy shares must be positive")
     if np.any(rep0 < 0) or np.any(rep0 > 1):
         raise ValueError("Reputations must be between 0 and 1.")
- 
-    reset = sim.get("reset_reputations", True)
-    n_generations = sim.get("n_generations", 100000)
-    n_rounds = sim.get("n_rounds", 10)
-    eta = sim.get("selection_strength", 0.1)
-    min_visits = sim.get("cycle_min_visits", 3)
-    support_thr = sim.get("support_threshold", sim["dominance_threshold"])
- 
-    # Wir halten die Logits statt der Anteile: so können Anteile beliebig nahe
-    # an 0 kommen (und trotzdem wieder wachsen), ohne in Floats zu unterlaufen.
-    u = np.log(shares0)
- 
-    reputations = rep0.copy()
-    prev_final_reps = None
- 
-    history = {"generation": [], "shares": [], "final_reputations": [], "payoffs": []}
-    visits = []
-    current_visit = None
- 
-    outcome, winner, stop_generation = None, None, None
-    first_trajectory = last_trajectory = None
- 
-    for gen in range(n_generations):
-        shares = softmax(u)
- 
-        if reset:
-            reputations = rep0.copy()
- 
-        reputations, total_payoffs, trajectory = run_generation(shares, reputations, params)
-        payoffs = total_payoffs / n_rounds          # mittlere Auszahlung pro Runde
- 
-        if first_trajectory is None:
-            first_trajectory = trajectory
-        last_trajectory = trajectory
- 
-        # Replicator-Schritt (noch nicht angewendet, nur für die Änderung)
-        u_next = u + eta * total_payoffs
-        u_next -= np.max(u_next)
- 
-        share_change = float(np.max(np.abs(softmax(u_next) - shares)))
-        rep_change = (
-            float(np.max(np.abs(reputations - prev_final_reps)))
-            if prev_final_reps is not None else np.inf
-        )
-        prev_final_reps = reputations.copy()
- 
-        history["generation"].append(gen)
-        history["shares"].append(shares.copy())
-        history["final_reputations"].append(reputations.copy())
-        history["payoffs"].append(payoffs.copy())
- 
-        kind, w = assess_state(shares, payoffs, share_change, rep_change, sim)
- 
-        # --- Besuche "Monopolist, aber invadierbar" mitschreiben -------------
-        visit_ended = False
- 
-        if kind == "invadable":
-            depth = log_depth(u, w)
-            if current_visit is not None and current_visit["monopolist"] == names[w]:
-                current_visit["log_depth"] = min(current_visit["log_depth"], depth)
-                current_visit["end_generation"] = gen
-            else:
-                if current_visit is not None:
-                    visit_ended = True
-                others = np.arange(n) != w
-                invader = int(np.argmax(np.where(others, payoffs, -np.inf)))
-                current_visit = {
-                    "start_generation": gen,
-                    "end_generation": gen,
-                    "monopolist": names[w],
-                    "invader": names[invader],
-                    "log_depth": depth,
-                }
-                visits.append(current_visit)
-        else:
-            if current_visit is not None:
-                visit_ended = True
-            current_visit = None
- 
-        # --- Entscheidung -----------------------------------------------------
-        if kind == "dominance":
-            outcome, winner, stop_generation = "dominance", names[w], gen
-            break
- 
-        if kind == "equilibrium":
-            outcome, stop_generation = "coexistence", gen
-            break
- 
-        if visit_ended:
-            completed = visits[:-1] if current_visit is not None else visits
-            if cycle_detected(completed, min_visits):
-                outcome, stop_generation = "heteroclinic_cycle", gen
-                break
- 
-        u = u_next
- 
-    # Maximale Generationenzahl erreicht
-    if outcome is None:
-        if cycle_detected(visits, min_visits):
-            outcome, stop_generation = "heteroclinic_cycle", n_generations - 1
-        else:
-            outcome = "not_converged"
- 
-    final_shares = history["shares"][-1]
-    coexisting = [names[i] for i in range(n) if final_shares[i] > support_thr]
- 
-    for k in history:
-        history[k] = np.array(history[k])
- 
-    messages = {
-        "dominance": "\nClear winner found.",
-        "coexistence": "\nEquilibrium with multiple strategies reached.",
-        "heteroclinic_cycle": "\nCycling toward the boundary of the simplex detected.",
-        "not_converged": "\nMaximum number of generations reached without classification.",
-    }
-    print(messages[outcome])
- 
+
+    model = params["model"]
+    dom_thr = float(sim["dominance_threshold"])
+
+    (outcome_code, winner_idx, stop_generation, n_run,
+     hist_shares, hist_rep, hist_pay, traj_first, traj_last,
+     last_shares, last_rep, last_pay) = _simulate(
+        shares0, rep0,
+        model["coop"], model["assess"], model["signal_cost"],
+        model["b"], model["c"],
+        float(sim.get("reputation_step", 1.0)),
+        int(sim.get("n_rounds", 10)),
+        int(sim.get("n_generations", 100000)),
+        float(sim.get("selection_strength", 0.1)),
+        bool(sim.get("reset_reputations", True)),
+        float(sim.get("reputation_fixpoint_tolerance", 1e-12)),
+        dom_thr,
+        float(sim.get("payoff_tolerance", 1e-9)),
+        float(sim.get("support_threshold", dom_thr)),
+        float(sim["share_tolerance"]),
+        float(sim["reputation_tolerance"]),
+        bool(record_history),
+    )
+
+    outcome = OUTCOMES[outcome_code]
+    winner = names[winner_idx] if outcome == "dominance" else None
+
+    support_thr = sim.get("support_threshold", dom_thr)
+    coexisting = (
+        [names[i] for i in range(n) if last_shares[i] > support_thr]
+        if outcome == "coexistence" else None
+    )
+
+    if record_history:
+        history = {
+            "generation": np.arange(n_run),
+            "shares": hist_shares[:n_run],
+            "final_reputations": hist_rep[:n_run],
+            "payoffs": hist_pay[:n_run],
+        }
+        round_reputations = {"first": traj_first, "last": traj_last}
+    else:
+        # nur der letzte Zustand (spart Speicher bei Sweeps)
+        history = {
+            "generation": np.array([n_run - 1]),
+            "shares": last_shares[None, :],
+            "final_reputations": last_rep[None, :],
+            "payoffs": last_pay[None, :],
+        }
+        round_reputations = None
+
+    if verbose:
+        print(MESSAGES[outcome])
+
     return {
         "outcome": outcome,
         "winner": winner,
-        "coexisting_strategies": coexisting if outcome == "coexistence" else None,
-        "convergence_generation": stop_generation if outcome != "not_converged" else None,
-        "visits": visits,
+        "coexisting_strategies": coexisting,
+        "convergence_generation": None if outcome == "not_converged" else int(stop_generation),
         "history": history,
         "names": names,
-        "round_reputations": {"first": first_trajectory, "last": last_trajectory},
+        "round_reputations": round_reputations,
     }
- 
- 
+
+
 # ============================================================
 # Ergebnisse speichern
 # ============================================================
- 
+
 def save_results(result, params, runtime):
     names = result["names"]
     history = result["history"]
     sim = params["simulation"]
- 
+
     outcome = result["outcome"]
     winner = result["winner"]
- 
+
     final_shares = history["shares"][-1]
     final_reputations = history["final_reputations"][-1]
     final_payoffs = history["payoffs"][-1]
- 
+
     results = {
         "simulation": {
             "outcome": outcome,
@@ -419,25 +544,24 @@ def save_results(result, params, runtime):
                 n: float(final_reputations[i]) for i, n in enumerate(names)
             },
         },
-        "cycle_visits": result["visits"],
         "input": params["input_config"],
     }
- 
+
     b, c, s, q = params["b"], params["c"], params["s"], params["q"]
     parameter_folder = f"b={b:g}_c={c:g}_s={s:g}_q={q:g}_n={sim.get('n_rounds', 10)}"
     rmech_folder = "rmech_" + "_".join(
         "".join(str(v) for v in row) for row in params["rmech"]
     )
- 
+
     save_dir = Path("results_generations") / parameter_folder / rmech_folder
     save_dir.mkdir(parents=True, exist_ok=True)
- 
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = save_dir / f"simulation_{timestamp}_{uuid.uuid4().hex[:4]}.json"
- 
+
     with open(filepath, "w") as file:
         json.dump(results, file, indent=4)
- 
+
     if sim.get("save_history", False):
         np.savez(
             filepath.with_suffix(".npz"),
@@ -447,7 +571,7 @@ def save_results(result, params, runtime):
             payoffs=history["payoffs"],
             names=np.array(names),
         )
- 
+
     print("\n" + "=" * 50)
     print("SIMULATION RESULTS")
     print("=" * 50)
@@ -457,45 +581,37 @@ def save_results(result, params, runtime):
         print(f"Coexisting:             {', '.join(result['coexisting_strategies'])}")
     print(f"Stopped at generation:  {result['convergence_generation']}")
     print(f"Runtime:                {runtime:.4f} seconds")
- 
+
     print("\nFinal strategy shares:")
     for name, share in results["final_state"]["shares"].items():
         print(f"{name:<15} {share:.8e}")
- 
-    if result["visits"]:
-        print("\nVisits near the boundary (monopolist can be invaded):")
-        for v in result["visits"]:
-            print(
-                f"  gen {v['start_generation']:>6}-{v['end_generation']:<6} "
-                f"{v['monopolist']:<8} -> invader {v['invader']:<8} "
-                f"log(depth) = {v['log_depth']:.2f}"
-            )
- 
+
     print("\n" + "=" * 50)
     print(f"Results saved to: {filepath}")
- 
+
     return filepath
- 
- 
 
-def run_simulation(config_path="config.json"):
 
-    print("Loading configuration...")
-    params = load_config(config_path)
+def run_simulation(config_path="config.json", config=None,
+                   record_history=True, verbose=True):
+    """
+    config      : optional Config-Dictionary (statt Datei), z. B. für Sweeps
+    record_history=False: speichert nur den letzten Zustand (schnell, wenig RAM)
+    """
+    if verbose:
+        print("Loading configuration...")
+    params = parse_config(config) if config is not None else load_config(config_path)
 
-    print("\nRunning simulation...")
-    start = time.perf_counter()
+    if verbose:
+        print("\nRunning simulation...")
+    start_time = time.perf_counter()
 
-    result = solver(params)
+    result = solver(params, record_history=record_history, verbose=verbose)
 
-    runtime = time.perf_counter() - start
-
-    # Laufzeit direkt im Ergebnis speichern
-    result["runtime_seconds"] = float(runtime)
+    result["runtime_seconds"] = float(time.perf_counter() - start_time)
 
     return result, params
 
- 
- 
+
 if __name__ == "__main__":
     run_simulation()

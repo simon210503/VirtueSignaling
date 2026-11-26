@@ -3,57 +3,37 @@
     "b": 2.0,
     "c": 1.0,
     "s": 0.5,
-    "q": 0.9
+    "q": 1.0
   },
 
   "reputation_mechanism": [
-    [1, 1, 1, 1],
+    [1, 0, 1, 0],
     [0, 1, 0, 0]
   ],
 
-"strategies": {
-  "ALLC": {
-    "enabled": false,
-    "share": 2,
-    "reputation": 0.1
+  "strategies": {
+    "ALLC":    { "enabled": false, "share": 2, "reputation": 0.5 },
+    "ALLC_VS": { "enabled": false, "share": 2, "reputation": 0.5 },
+    "ALLD":    { "enabled": true,  "share": 2, "reputation": 0.0 },
+    "ALLD_VS": { "enabled": true,  "share": 1, "reputation": 1.0 },
+    "DISC":    { "enabled": true,  "share": 1, "reputation": 1.0 },
+    "DISC_VS": { "enabled": false, "share": 2, "reputation": 0.5 }
   },
-  "ALLC_VS": {
-    "enabled": false,
-    "share": 2,
-    "reputation": 0.1
-  },
-  "ALLD": {
-    "enabled": true,
-    "share": 1,
-    "reputation": 0.5
-  },
-  "ALLD_VS": {
-    "enabled": true,
-    "share": 1,
-    "reputation": 0.5
-  },
-  "DISC": {
-    "enabled": true,
-    "share": 1,
-    "reputation": 0.5
-  },
-  "DISC_VS": {
-    "enabled": false,
-    "share": 2,
-    "reputation": 0.0
-  }
-},
 
   "simulation": {
-  "n_rounds": 100,
-  "n_generations": 100000,
-  "selection_strength": 1e-3,
-  "reputation_step": 1.0,
-  "reset_reputations": true,
-  "save_history": false,
+    "n_rounds": 100,
+    "n_generations": 100000,
+    "selection_strength": 0.1,
+    "reputation_step": 1.0,
+    "reset_reputations": true,
+    "reputation_fixpoint_tolerance": 1e-12,
 
-  "share_tolerance": 1e-9,
-  "reputation_tolerance": 1e-9,
-  "dominance_threshold": 1e-6
-}
+    "share_tolerance": 1e-9,
+    "reputation_tolerance": 1e-9,
+    "payoff_tolerance": 1e-9,
+    "dominance_threshold": 1e-6,
+    "support_threshold": 1e-6,
+
+    "save_history": false
+  }
 }
